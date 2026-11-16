@@ -48,7 +48,7 @@ $sbApi = "https://api.supabase.com/v1/projects/$ref"
 $sbUrl = "https://$ref.supabase.co"
 
 function Run-Sql($sql) {
-  $body = @{ query = $sql } | ConvertTo-Json
+  $body = @{ query = [string]$sql } | ConvertTo-Json
   Invoke-RestMethod -Method Post -Uri "$sbApi/database/query" -Headers $sbHeaders -Body $body | Out-Null
 }
 
