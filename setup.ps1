@@ -9,7 +9,7 @@
   Run:    powershell -ExecutionPolicy Bypass -File .\setup.ps1
 #>
 param(
-  [string]$RepoName = 'comics-site',
+  [string]$RepoName = 'comic-at-the-door',
   [switch]$PrivateRepo   # Render must have GitHub access to private repos
 )
 $ErrorActionPreference = 'Stop'

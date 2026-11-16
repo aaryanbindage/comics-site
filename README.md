@@ -1,4 +1,4 @@
-# Comics site
+# Comic at the Door
 
 Static site + Supabase (auth, Postgres, private Storage). Deployed on Render.
 
