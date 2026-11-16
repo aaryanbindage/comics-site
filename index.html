@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Comics Archive</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Comics Archive</h1>
+    <div id="userbar" hidden>
+      <span id="who"></span>
+      <button id="logout" class="ghost">Log out</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Login / signup -->
+    <section id="auth" class="card narrow" hidden>
+      <h2 id="auth-title">Log in</h2>
+      <form id="auth-form">
+        <label>Email <input type="email" id="email" required autocomplete="email"></label>
+        <label>Password <input type="password" id="password" required minlength="6" autocomplete="current-password"></label>
+        <button type="submit" id="auth-submit">Log in</button>
+      </form>
+      <p class="muted"><a href="#" id="forgot">Forgot password?</a></p>
+      <p id="auth-msg" class="msg"></p>
+    </section>
+
+    <!-- Set password (invite / reset links) -->
+    <section id="setpw" class="card narrow" hidden>
+      <h2>Set your password</h2>
+      <form id="setpw-form">
+        <label>New password <input type="password" id="newpw" required minlength="8" autocomplete="new-password"></label>
+        <button type="submit">Save password</button>
+      </form>
+      <p id="setpw-msg" class="msg"></p>
+    </section>
+
+    <!-- Admin upload -->
+    <section id="admin" class="card" hidden>
+      <h2>Upload a new comic</h2>
+      <form id="upload-form">
+        <label>Title <input id="c-title" required maxlength="200"></label>
+        <label>Date <input type="date" id="c-date" required></label>
+        <label>Description <textarea id="c-desc" rows="2" maxlength="1000"></textarea></label>
+        <label>Image <input type="file" id="c-file" accept="image/*" required></label>
+        <button type="submit">Upload</button>
+      </form>
+      <p id="upload-msg" class="msg"></p>
+    </section>
+
+    <!-- Gallery -->
+    <section id="gallery" hidden>
+      <p id="empty" class="muted" hidden>No comics yet.</p>
+      <div id="grid"></div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
