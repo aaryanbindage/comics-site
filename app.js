@@ -15,6 +15,14 @@ const $ = (id) => document.getElementById(id);
 
 let isAdmin = false;
 
+// Reject instead of hanging forever if a request never answers.
+function withTimeout(promise, ms = 15000) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('request timed out')), ms)),
+  ]);
+}
+
 function show(id, on) { $(id).hidden = !on; }
 
 function setMsg(id, text, err = false) {
@@ -56,24 +64,33 @@ $('accept-form').addEventListener('submit', async (e) => {
   const tok = pendingToken;
   pendingToken = null;
   const email = $('accept-email').value.trim();
-  const { data: cur } = await sb.auth.getSession();
-  const { error } = await sb.auth.verifyOtp({ email, token: tok.token, type: tok.type });
-  btn.disabled = false;
-  if (error) {
-    needPassword = false;
-    // Link already used, but this browser is already signed in as that same person
-    // (e.g. they closed the tab before setting a password): carry on from where they were.
-    if (cur.session && cur.session.user.email?.toLowerCase() === email.toLowerCase()) {
-      history.replaceState(null, '', location.pathname);
-      return render(cur.session);
+  try {
+    const { data: cur } = await withTimeout(sb.auth.getSession());
+    const { error } = await withTimeout(sb.auth.verifyOtp({ email, token: tok.token, type: tok.type }));
+    if (error) {
+      needPassword = false;
+      // Link already used, but this browser is already signed in as that same person
+      // (e.g. they closed the tab before setting a password): carry on from where they were.
+      if (cur.session && cur.session.user.email?.toLowerCase() === email.toLowerCase()) {
+        history.replaceState(null, '', location.pathname);
+        return await render(cur.session);
+      }
+      pendingToken = tok;
+      // Wrong email leaves the link usable; the form stays so the right person can retry.
+      return setMsg('accept-msg', 'That email doesn\'t match this invitation, or the link has expired or was already used.', true);
     }
+    history.replaceState(null, '', location.pathname);
+    const { data } = await withTimeout(sb.auth.getSession());
+    await render(data.session);
+  } catch (err) {
+    console.error('accept failed', err);
+    needPassword = false;
     pendingToken = tok;
-    // Wrong email leaves the link usable; the form stays so the right person can retry.
-    return setMsg('accept-msg', 'That email doesn\'t match this invitation, or the link has expired or was already used.', true);
+    show('accept', true);
+    setMsg('accept-msg', 'Something went wrong (' + (err.message || err) + '). Reload the page and try again.', true);
+  } finally {
+    btn.disabled = false;
   }
-  history.replaceState(null, '', location.pathname);
-  const { data } = await sb.auth.getSession();
-  render(data.session);
 });
 
 $('setpw-form').addEventListener('submit', async (e) => {
