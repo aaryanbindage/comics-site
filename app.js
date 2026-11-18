@@ -82,7 +82,13 @@ $('setpw-form').addEventListener('submit', async (e) => {
     password: $('newpw').value,
     data: { needs_password: false },
   });
-  if (error) return setMsg('setpw-msg', error.message, true);
+  if (error) {
+    if (/sub claim|does not exist/i.test(error.message)) {
+      await sb.auth.signOut({ scope: 'local' });
+      return setMsg('auth-msg', 'Your saved login is no longer valid. Ask for a new invitation link.', true);
+    }
+    return setMsg('setpw-msg', error.message, true);
+  }
   needPassword = false;
   history.replaceState(null, '', location.pathname);
   const { data } = await sb.auth.getSession();
@@ -201,6 +207,13 @@ async function render(session) {
     if (pendingToken) { show('auth', false); show('accept', true); return; }
     show('accept', false); show('auth', true);
     if (linkError) setMsg('auth-msg', linkError + ' Ask for a new invitation link.', true);
+    return;
+  }
+  // A saved login can outlive its account (user deleted / re-invited): confirm with the server.
+  const { error: userErr } = await sb.auth.getUser();
+  if (userErr) {
+    await sb.auth.signOut({ scope: 'local' });
+    setMsg('auth-msg', 'Your saved login is no longer valid. Log in, or ask for a new invitation link.', true);
     return;
   }
   if (needPassword || session.user.user_metadata?.needs_password) {
