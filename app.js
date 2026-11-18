@@ -1,6 +1,14 @@
 // Capture before the client consumes the URL hash: invite/reset links need a password set.
 let needPassword = /type=(invite|recovery)/.test(location.hash);
 
+// Scanner-proof invite links: /?token_hash=...&type=invite shows a button; the token is only used on click.
+const qs = new URLSearchParams(location.search);
+const tokenType = qs.get('type');
+let pendingToken = qs.get('token_hash') && ['invite', 'recovery'].includes(tokenType)
+  ? { token_hash: qs.get('token_hash'), type: tokenType } : null;
+// Supabase redirects here with #error_description=... when a link is expired/used.
+const linkError = new URLSearchParams(location.hash.slice(1)).get('error_description');
+
 const sb = supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 const $ = (id) => document.getElementById(id);
 
@@ -35,6 +43,22 @@ $('forgot').addEventListener('click', async (e) => {
   if (!email) return setMsg('auth-msg', 'Enter your email above first.', true);
   const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin });
   setMsg('auth-msg', error ? error.message : 'If that email is invited, a reset link is on its way.', !!error);
+});
+
+$('accept-btn').addEventListener('click', async () => {
+  const btn = $('accept-btn');
+  btn.disabled = true;
+  needPassword = true;
+  const { error } = await sb.auth.verifyOtp(pendingToken);
+  if (error) {
+    needPassword = false;
+    pendingToken = null;
+    history.replaceState(null, '', location.pathname);
+    show('accept', false); show('auth', true);
+    return setMsg('auth-msg', 'This invitation link has expired or was already used. Ask for a new one.', true);
+  }
+  pendingToken = null;
+  history.replaceState(null, '', location.pathname);
 });
 
 $('setpw-form').addEventListener('submit', async (e) => {
@@ -147,8 +171,11 @@ $('upload-form').addEventListener('submit', async (e) => {
 async function render(session) {
   if (!session) {
     isAdmin = false;
-    show('setpw', false); show('auth', true); show('gallery', false); show('admin', false); show('userbar', false);
+    show('setpw', false); show('gallery', false); show('admin', false); show('userbar', false);
     $('grid').replaceChildren();
+    if (pendingToken) { show('auth', false); show('accept', true); return; }
+    show('accept', false); show('auth', true);
+    if (linkError) setMsg('auth-msg', linkError + ' Ask for a new invitation link.', true);
     return;
   }
   if (needPassword) {
