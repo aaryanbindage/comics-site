@@ -26,7 +26,10 @@ $h = @{ apikey = $service; Authorization = "Bearer $service"; 'Content-Type' = '
 $gen = "https://$ref.supabase.co/auth/v1/admin/generate_link"
 
 function New-Link($email, $type) {
-  $body = @{ type = $type; email = $email; redirect_to = $SiteUrl } | ConvertTo-Json
+  $req = @{ type = $type; email = $email; redirect_to = $SiteUrl }
+  # Flag new accounts so the site keeps asking for a password until one is saved.
+  if ($type -eq 'invite') { $req.data = @{ needs_password = $true } }
+  $body = $req | ConvertTo-Json
   $r = Invoke-RestMethod -Method Post -Uri $gen -Headers $h -Body $body
   # Link to our site with a button, so email/chat link scanners can't burn the one-time token.
   "$SiteUrl/?token_hash=$($r.hashed_token)&type=$type"

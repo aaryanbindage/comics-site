@@ -63,12 +63,15 @@ $('accept-btn').addEventListener('click', async () => {
 
 $('setpw-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const { error } = await sb.auth.updateUser({ password: $('newpw').value });
+  const { data: upd, error } = await sb.auth.updateUser({
+    password: $('newpw').value,
+    data: { needs_password: false },
+  });
   if (error) return setMsg('setpw-msg', error.message, true);
   needPassword = false;
   history.replaceState(null, '', location.pathname);
   const { data } = await sb.auth.getSession();
-  render(data.session);
+  render({ ...data.session, user: upd.user });
 });
 
 $('logout').addEventListener('click', () => sb.auth.signOut());
@@ -178,7 +181,7 @@ async function render(session) {
     if (linkError) setMsg('auth-msg', linkError + ' Ask for a new invitation link.', true);
     return;
   }
-  if (needPassword) {
+  if (needPassword || session.user.user_metadata?.needs_password) {
     show('auth', false); show('gallery', false); show('admin', false); show('userbar', false); show('setpw', true);
     return;
   }
