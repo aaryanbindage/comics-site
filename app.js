@@ -55,14 +55,18 @@ $('accept-form').addEventListener('submit', async (e) => {
   // Clear first so the sign-in event below renders the app instead of this form again.
   const tok = pendingToken;
   pendingToken = null;
-  const { error } = await sb.auth.verifyOtp({
-    email: $('accept-email').value.trim(),
-    token: tok.token,
-    type: tok.type,
-  });
+  const email = $('accept-email').value.trim();
+  const { data: cur } = await sb.auth.getSession();
+  const { error } = await sb.auth.verifyOtp({ email, token: tok.token, type: tok.type });
   btn.disabled = false;
   if (error) {
     needPassword = false;
+    // Link already used, but this browser is already signed in as that same person
+    // (e.g. they closed the tab before setting a password): carry on from where they were.
+    if (cur.session && cur.session.user.email?.toLowerCase() === email.toLowerCase()) {
+      history.replaceState(null, '', location.pathname);
+      return render(cur.session);
+    }
     pendingToken = tok;
     // Wrong email leaves the link usable; the form stays so the right person can retry.
     return setMsg('accept-msg', 'That email doesn\'t match this invitation, or the link has expired or was already used.', true);
