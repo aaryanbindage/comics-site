@@ -52,19 +52,24 @@ $('accept-form').addEventListener('submit', async (e) => {
   btn.disabled = true;
   setMsg('accept-msg', '');
   needPassword = true;
+  // Clear first so the sign-in event below renders the app instead of this form again.
+  const tok = pendingToken;
+  pendingToken = null;
   const { error } = await sb.auth.verifyOtp({
     email: $('accept-email').value.trim(),
-    token: pendingToken.token,
-    type: pendingToken.type,
+    token: tok.token,
+    type: tok.type,
   });
   btn.disabled = false;
   if (error) {
     needPassword = false;
+    pendingToken = tok;
     // Wrong email leaves the link usable; the form stays so the right person can retry.
     return setMsg('accept-msg', 'That email doesn\'t match this invitation, or the link has expired or was already used.', true);
   }
-  pendingToken = null;
   history.replaceState(null, '', location.pathname);
+  const { data } = await sb.auth.getSession();
+  render(data.session);
 });
 
 $('setpw-form').addEventListener('submit', async (e) => {
@@ -178,6 +183,13 @@ $('upload-form').addEventListener('submit', async (e) => {
 
 // ---------- Session handling ----------
 async function render(session) {
+  // An invite link always wins, even if this browser is already logged in as someone else.
+  if (pendingToken) {
+    show('auth', false); show('setpw', false); show('gallery', false); show('admin', false); show('userbar', false);
+    show('accept', true);
+    return;
+  }
+  show('accept', false);
   if (!session) {
     isAdmin = false;
     show('setpw', false); show('gallery', false); show('admin', false); show('userbar', false);
