@@ -1,11 +1,12 @@
 // Capture before the client consumes the URL hash: invite/reset links need a password set.
 let needPassword = /type=(invite|recovery)/.test(location.hash);
 
-// Scanner-proof invite links: /?token_hash=...&type=invite shows a button; the token is only used on click.
+// Scanner-proof invite links: /?otp=...&type=invite shows a form; the code is only used on submit,
+// and the invited email must be typed in, so the link alone is not enough.
 const qs = new URLSearchParams(location.search);
 const tokenType = qs.get('type');
-let pendingToken = qs.get('token_hash') && ['invite', 'recovery'].includes(tokenType)
-  ? { token_hash: qs.get('token_hash'), type: tokenType } : null;
+let pendingToken = qs.get('otp') && ['invite', 'recovery'].includes(tokenType)
+  ? { token: qs.get('otp'), type: tokenType } : null;
 // Supabase redirects here with #error_description=... when a link is expired/used.
 const linkError = new URLSearchParams(location.hash.slice(1)).get('error_description');
 
@@ -45,17 +46,22 @@ $('forgot').addEventListener('click', async (e) => {
   setMsg('auth-msg', error ? error.message : 'If that email is invited, a reset link is on its way.', !!error);
 });
 
-$('accept-btn').addEventListener('click', async () => {
+$('accept-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
   const btn = $('accept-btn');
   btn.disabled = true;
+  setMsg('accept-msg', '');
   needPassword = true;
-  const { error } = await sb.auth.verifyOtp(pendingToken);
+  const { error } = await sb.auth.verifyOtp({
+    email: $('accept-email').value.trim(),
+    token: pendingToken.token,
+    type: pendingToken.type,
+  });
+  btn.disabled = false;
   if (error) {
     needPassword = false;
-    pendingToken = null;
-    history.replaceState(null, '', location.pathname);
-    show('accept', false); show('auth', true);
-    return setMsg('auth-msg', 'This invitation link has expired or was already used. Ask for a new one.', true);
+    // Wrong email leaves the link usable; the form stays so the right person can retry.
+    return setMsg('accept-msg', 'That email doesn\'t match this invitation, or the link has expired or was already used.', true);
   }
   pendingToken = null;
   history.replaceState(null, '', location.pathname);

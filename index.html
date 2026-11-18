@@ -31,8 +31,12 @@
     <!-- Accept invitation (button so link scanners can't use up the token) -->
     <section id="accept" class="card narrow" hidden>
       <h2>Welcome to Comic At The Door</h2>
-      <p>Please accept your invitation to access our comic archive.</p>
-      <button id="accept-btn">Accept invitation</button>
+      <p>Please accept your invitation to access our comic archive. Enter the email address this invitation was sent to.</p>
+      <form id="accept-form">
+        <label>Email <input type="email" id="accept-email" required autocomplete="email"></label>
+        <button type="submit" id="accept-btn">Accept invitation</button>
+      </form>
+      <p id="accept-msg" class="msg"></p>
     </section>
 
     <!-- Set password (invite / reset links) -->

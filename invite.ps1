@@ -31,8 +31,9 @@ function New-Link($email, $type) {
   if ($type -eq 'invite') { $req.data = @{ needs_password = $true } }
   $body = $req | ConvertTo-Json
   $r = Invoke-RestMethod -Method Post -Uri $gen -Headers $h -Body $body
-  # Link to our site with a button, so email/chat link scanners can't burn the one-time token.
-  "$SiteUrl/?token_hash=$($r.hashed_token)&type=$type"
+  # Link to our site with a form (invitee must type their email), so link scanners can't burn the
+  # one-time code and a stray link can't be used by someone who doesn't know the invited address.
+  "$SiteUrl/?otp=$($r.email_otp)&type=$type"
 }
 
 while ($true) {
