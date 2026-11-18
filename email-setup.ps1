@@ -28,7 +28,7 @@ $invite = @'
   <p style="margin:28px 0">
     <a href="{{ .ConfirmationURL }}" style="background:#3b5bdb;color:#ffffff;padding:12px 22px;border-radius:6px;text-decoration:none;font-size:16px">Accept invitation</a>
   </p>
-  <p style="font-size:13px;color:#6b6b70;line-height:1.5">This invitation was sent by Comic At The Door. The link expires after a limited time. If you weren't expecting it, you can ignore this email.</p>
+  <p style="font-size:13px;color:#6b6b70;line-height:1.5">This invitation was sent by Comic At The Door. The link expires in 24 hours. If it runs out, just ask for a fresh one. If you weren't expecting this email, you can ignore it.</p>
 </div>
 '@
 

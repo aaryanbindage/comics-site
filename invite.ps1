@@ -46,7 +46,12 @@ while ($true) {
     Write-Host "Invite failed (account may already exist); making a password-reset link instead." -ForegroundColor Yellow
     try { $link = New-Link $email 'recovery' } catch { Write-Host "Failed: $($_.Exception.Message)" -ForegroundColor Red; continue }
   }
-  $msg = "Welcome to Comic At The Door! Please accept this invitation to access our comic archive:`n$link"
+  $msg = "Welcome to Comic At The Door!`n`n" +
+    "You've been invited to our private comic archive. Use the link below to accept your invitation and choose a password. " +
+    "You'll be asked to type in this email address when you open it.`n`n" +
+    "$link`n`n" +
+    "Please note: this link expires in 24 hours and can only be used once. " +
+    "If it runs out, just let us know and we'll send you a fresh one."
   Set-Clipboard -Value $msg
   Write-Host "`n$msg" -ForegroundColor Green
   Write-Host '(copied to clipboard - paste it into your message)'
