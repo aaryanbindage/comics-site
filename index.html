@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Comic at the Door</title>
-  <link rel="stylesheet" href="style.css">
+  <title>Comic At The Door</title>
+  <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
   <header>
-    <h1>Comic at the Door</h1>
+    <h1>Comic At The Door</h1>
     <div id="userbar" hidden>
       <span id="who"></span>
       <button id="logout" class="ghost">Log out</button>
@@ -16,19 +16,21 @@
   </header>
 
   <main>
-    <!-- Login / signup -->
+    <p id="loading" class="muted center">Loading…</p>
+
+    <!-- Log in (no signup: invite only) -->
     <section id="auth" class="card narrow" hidden>
-      <h2 id="auth-title">Log in</h2>
+      <h2>Log in</h2>
       <form id="auth-form">
         <label>Email <input type="email" id="email" required autocomplete="email"></label>
-        <label>Password <input type="password" id="password" required minlength="6" autocomplete="current-password"></label>
+        <label>Password <input type="password" id="password" required autocomplete="current-password"></label>
         <button type="submit" id="auth-submit">Log in</button>
       </form>
-      <p class="muted"><a href="#" id="forgot">Forgot password?</a></p>
+      <p class="muted small">Forgot your password? Message us and we'll send you a link to reset it.</p>
       <p id="auth-msg" class="msg"></p>
     </section>
 
-    <!-- Accept invitation (button so link scanners can't use up the token) -->
+    <!-- Accept invitation (form, so link scanners can't use up the code) -->
     <section id="accept" class="card narrow" hidden>
       <h2>Welcome to Comic At The Door</h2>
       <p>Please accept your invitation to access our comic archive. Enter the email address this invitation was sent to.</p>
@@ -39,12 +41,14 @@
       <p id="accept-msg" class="msg"></p>
     </section>
 
-    <!-- Set password (invite / reset links) -->
+    <!-- Set password (after accepting an invite or reset link) -->
     <section id="setpw" class="card narrow" hidden>
-      <h2>Set your password</h2>
+      <h2>Choose your password</h2>
+      <p class="muted small">You'll use this with your email to log in from now on.</p>
       <form id="setpw-form">
         <label>New password <input type="password" id="newpw" required minlength="8" autocomplete="new-password"></label>
-        <button type="submit">Save password</button>
+        <label>Type it again <input type="password" id="newpw2" required minlength="8" autocomplete="new-password"></label>
+        <button type="submit" id="setpw-btn">Save password</button>
       </form>
       <p id="setpw-msg" class="msg"></p>
     </section>
@@ -57,20 +61,20 @@
         <label>Date <input type="date" id="c-date" required></label>
         <label>Description <textarea id="c-desc" rows="2" maxlength="1000"></textarea></label>
         <label>Image <input type="file" id="c-file" accept="image/*" required></label>
-        <button type="submit">Upload</button>
+        <button type="submit" id="upload-btn">Upload</button>
       </form>
       <p id="upload-msg" class="msg"></p>
     </section>
 
     <!-- Gallery -->
     <section id="gallery" hidden>
-      <p id="empty" class="muted" hidden>No comics yet.</p>
+      <p id="empty" class="muted" hidden>No comics yet. Check back soon!</p>
       <div id="grid"></div>
     </section>
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
-  <script src="config.js"></script>
-  <script src="app.js"></script>
+  <script src="config.js?v=3"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>

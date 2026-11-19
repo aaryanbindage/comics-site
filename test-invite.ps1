@@ -4,68 +4,104 @@
   Run:  powershell -ExecutionPolicy Bypass -File .\test-invite.ps1
   Token needs: API keys read, Auth config read.
 #>
+param(
+  [string]$ProjectRef = 'ehihfurhujnayovoxpjw',
+  [string]$SiteUrl = 'https://comics-site.onrender.com'
+)
 $ErrorActionPreference = 'Stop'
-function Ask($label, $secret = $false) {
-  if ($secret) {
-    $s = Read-Host $label -AsSecureString
-    return [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))
-  }
-  return (Read-Host $label).Trim()
+function Ask($label) {
+  $s = Read-Host $label -AsSecureString
+  [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))
 }
 function Pass($m) { Write-Host "PASS  $m" -ForegroundColor Green }
 function Fail($m) { Write-Host "FAIL  $m" -ForegroundColor Red; $script:failed = $true }
+function Info($m) { Write-Host "INFO  $m" -ForegroundColor Cyan }
+function ErrText($err) { if ($err.ErrorDetails -and $err.ErrorDetails.Message) { $err.ErrorDetails.Message } else { $err.Exception.Message } }
 
-$token = if ($env:SUPABASE_ACCESS_TOKEN) { $env:SUPABASE_ACCESS_TOKEN } else { Ask 'Supabase access token' $true }
-$ref   = Ask 'Supabase project ref (default ehihfurhujnayovoxpjw)'
-if (-not $ref) { $ref = 'ehihfurhujnayovoxpjw' }
-$base = "https://$ref.supabase.co"
+$token = if ($env:SUPABASE_ACCESS_TOKEN) { $env:SUPABASE_ACCESS_TOKEN } else { Ask 'Supabase access token' }
+$base = "https://$ProjectRef.supabase.co"
 $mh = @{ Authorization = "Bearer $token" }
 
-# 1. Link lifetime
-$cfg = Invoke-RestMethod -Uri "https://api.supabase.com/v1/projects/$ref/config/auth" -Headers $mh
+# --- Settings ---
+$cfg = Invoke-RestMethod -Uri "https://api.supabase.com/v1/projects/$ProjectRef/config/auth" -Headers $mh
 $hours = [math]::Round($cfg.mailer_otp_exp / 3600, 2)
 if ($cfg.mailer_otp_exp -ge 86400) { Pass "link lifetime is $hours hours" } else { Fail "link lifetime is only $hours hours (need 24). Set Email OTP Expiration to 86400." }
 if ($cfg.disable_signup) { Pass 'public signups are disabled' } else { Fail 'public signups are ENABLED (anyone can register)' }
 
-# 2. Keys
-$keys = Invoke-RestMethod -Uri "https://api.supabase.com/v1/projects/$ref/api-keys" -Headers $mh
+# --- Live site is the latest version ---
+try {
+  $html = (Invoke-WebRequest -UseBasicParsing "$SiteUrl/").Content
+  $js = (Invoke-WebRequest -UseBasicParsing "$SiteUrl/app.js").Content
+  if ($html -match 'newpw2' -and $js -match 'shownUserId') { Pass 'live site is running the latest code' } else { Fail 'live site is still on an older version (wait for Render to deploy)' }
+} catch { Fail "could not load $SiteUrl ($($_.Exception.Message))" }
+
+$keys = Invoke-RestMethod -Uri "https://api.supabase.com/v1/projects/$ProjectRef/api-keys" -Headers $mh
 $anon = ($keys | Where-Object { $_.name -eq 'anon' }).api_key
 $service = ($keys | Where-Object { $_.name -eq 'service_role' }).api_key
 $sh = @{ apikey = $service; Authorization = "Bearer $service"; 'Content-Type' = 'application/json' }
+$ah = @{ apikey = $anon; 'Content-Type' = 'application/json' }
+
+function Gen($type, $email) {
+  $req = @{ type = $type; email = $email; redirect_to = $SiteUrl }
+  if ($type -eq 'invite') { $req.data = @{ needs_password = $true } }
+  Invoke-RestMethod -Method Post -Uri "$base/auth/v1/admin/generate_link" -Headers $sh -Body ($req | ConvertTo-Json)
+}
+# Same logic as invite.ps1: invite, or a reset link only if the account already exists.
+function GenLikeScript($email) {
+  try { $r = Gen 'invite' $email; return @{ r = $r; type = 'invite' } }
+  catch {
+    $why = ErrText $_
+    if ($why -match 'already|exists|registered') { return @{ r = (Gen 'recovery' $email); type = 'recovery' } }
+    throw "generate_link failed: $why"
+  }
+}
+function Verify($type, $email, $code) {
+  try { Invoke-RestMethod -Method Post -Uri "$base/auth/v1/verify" -Headers $ah -Body (@{ type = $type; email = $email; token = $code } | ConvertTo-Json) }
+  catch { $null }
+}
+
 $email = "comic-test-$([guid]::NewGuid().ToString('N').Substring(0,8))@example.com"
 $userId = $null
 try {
-  # 3. Generate invite link (same call invite.ps1 makes)
-  $body = @{ type = 'invite'; email = $email; redirect_to = 'https://comics-site.onrender.com'; data = @{ needs_password = $true } } | ConvertTo-Json
-  $r = Invoke-RestMethod -Method Post -Uri "$base/auth/v1/admin/generate_link" -Headers $sh -Body $body
-  $userId = $r.id
-  if ($r.email_otp) { Pass 'invite link generated (email_otp present)' } else { Fail 'generate_link returned no email_otp'; throw 'stop' }
+  # 1. First invite
+  $first = Gen 'invite' $email
+  $userId = $first.id
+  if ($first.email_otp) { Pass 'invite link generated' } else { Fail 'generate_link returned no code'; throw 'stop' }
 
-  # 4. Wrong email must be rejected, and must NOT burn the link
-  try {
-    Invoke-RestMethod -Method Post -Uri "$base/auth/v1/verify" -Headers @{ apikey = $anon; 'Content-Type' = 'application/json' } `
-      -Body (@{ type = 'invite'; email = 'someone-else@example.com'; token = $r.email_otp } | ConvertTo-Json) | Out-Null
-    Fail 'wrong email was ACCEPTED'
-  } catch { Pass 'wrong email is rejected' }
+  # 2. Re-invite before they accept (what happens when you run invite.ps1 twice for someone)
+  $second = GenLikeScript $email
+  Pass "re-inviting someone who hasn't accepted works (script makes a '$($second.type)' link)"
 
-  # 5. Correct email must work
-  $v = Invoke-RestMethod -Method Post -Uri "$base/auth/v1/verify" -Headers @{ apikey = $anon; 'Content-Type' = 'application/json' } `
-    -Body (@{ type = 'invite'; email = $email; token = $r.email_otp } | ConvertTo-Json)
-  if ($v.access_token) { Pass 'correct email + link signs the invitee in' } else { Fail 'verify returned no session' }
-  if ($v.user.user_metadata.needs_password -eq $true) { Pass 'needs_password flag is set on the new account' } else { Fail 'needs_password flag missing' }
+  # 3. Wrong email is rejected and doesn't burn the link
+  if (Verify $second.type 'someone-else@example.com' $second.r.email_otp) { Fail 'wrong email was ACCEPTED' } else { Pass 'wrong email is rejected' }
 
-  # 6. Link must be single-use
-  try {
-    Invoke-RestMethod -Method Post -Uri "$base/auth/v1/verify" -Headers @{ apikey = $anon; 'Content-Type' = 'application/json' } `
-      -Body (@{ type = 'invite'; email = $email; token = $r.email_otp } | ConvertTo-Json) | Out-Null
-    Fail 'link worked a second time'
-  } catch { Pass 'link is single-use' }
+  # 4. Correct email + newest link works
+  $v = Verify $second.type $email $second.r.email_otp
+  if ($v.access_token) { Pass 'newest link + correct email signs the invitee in' } else { Fail 'newest link did NOT work' }
+  $meta = if ($v.user) { $v.user.user_metadata.needs_password } else { $null }
+  if ($meta -eq $true) { Pass 'account is marked as needing a password' } else { Fail 'needs_password flag missing after accepting' }
+
+  # 5. The older link no longer works
+  if (Verify 'invite' $email $first.email_otp) { Info 'older link still worked (both links were valid)' } else { Pass 'older link is cancelled once a newer one is made' }
+
+  # 6. Single use
+  if (Verify $second.type $email $second.r.email_otp) { Fail 'link worked a second time' } else { Pass 'link is single-use' }
+
+  # 7. Password-reset link for someone who already has an account
+  $again = GenLikeScript $email
+  if ($again.type -eq 'recovery') { Pass 'existing account gets a password-reset link' } else { Fail "existing account got a '$($again.type)' link instead of a reset link" }
+  if ((Verify $again.type $email $again.r.email_otp).access_token) { Pass 'password-reset link works' } else { Fail 'password-reset link did NOT work' }
+
+  # 8. A logged-in user can set a password and clear the flag (what the "Choose your password" page does)
+  $u = Invoke-RestMethod -Method Put -Uri "$base/auth/v1/user" -Headers @{ apikey = $anon; Authorization = "Bearer $($v.access_token)"; 'Content-Type' = 'application/json' } `
+    -Body (@{ password = "Test-$([guid]::NewGuid().ToString('N').Substring(0,12))"; data = @{ needs_password = $false } } | ConvertTo-Json)
+  if ($u.user_metadata.needs_password -eq $false) { Pass 'setting a password works and clears the flag' } else { Fail 'setting a password did not clear the flag' }
 } catch {
-  if ($_.Exception.Message -ne 'stop') { Fail "unexpected error: $($_.Exception.Message)" }
+  if ($_.Exception.Message -ne 'stop') { Fail "unexpected error: $(ErrText $_)" }
 } finally {
   if ($userId) {
     try { Invoke-RestMethod -Method Delete -Uri "$base/auth/v1/admin/users/$userId" -Headers $sh | Out-Null; Write-Host "(test user $email deleted)" }
     catch { Write-Host "Could not delete test user $email - remove it in Authentication > Users." -ForegroundColor Yellow }
   }
 }
-if ($script:failed) { Write-Host "`nSome checks FAILED." -ForegroundColor Red; exit 1 } else { Write-Host "`nAll checks passed." -ForegroundColor Green }
+if ($script:failed) { Write-Host "`nSome checks FAILED. Paste this output to Claude." -ForegroundColor Red; exit 1 } else { Write-Host "`nAll checks passed." -ForegroundColor Green }

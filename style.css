@@ -31,4 +31,7 @@ a { color: var(--accent); }
 .comic .meta { padding: 14px 18px; display: grid; gap: 4px; }
 .comic h3 { margin: 0; }
 .comic .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.small { font-size: .9rem; }
+.center { text-align: center; }
+.comic .desc { margin: 4px 0 0; }
 [hidden] { display: none !important; }
