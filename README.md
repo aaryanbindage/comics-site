@@ -7,7 +7,8 @@ Static site + Supabase (auth, Postgres, private Storage). Deployed on Render.
 2. SQL Editor → paste and run `supabase.sql`.
 3. Authentication → Sign In / Providers (or Settings) → turn OFF "Allow new users to sign up". Invite-only from now on.
 4. Authentication → URL Configuration: set Site URL to your Render URL and add it under Redirect URLs (invite links land there).
-5. Authentication → Users → **Invite user**, enter your own email first. Click the link in the email, set a password on the site, then run in the SQL editor:
+5. **Invite people with `invite.ps1`, not the dashboard's "Invite user" button.** Without custom SMTP, Supabase's built-in email only reaches your own team's addresses, so dashboard invites never arrive for readers. `invite.ps1` makes the link and you send it yourself. Run `test-invite.ps1` to check everything works.
+   Invite your own email first. Click the link in the email, set a password on the site, then run in the SQL editor:
    ```sql
    insert into public.admins (user_id) select id from auth.users where email = 'you@example.com';
    ```
