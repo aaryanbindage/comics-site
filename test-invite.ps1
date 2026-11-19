@@ -17,6 +17,23 @@ function Pass($m) { Write-Host "PASS  $m" -ForegroundColor Green }
 function Fail($m) { Write-Host "FAIL  $m" -ForegroundColor Red; $script:failed = $true }
 function Info($m) { Write-Host "INFO  $m" -ForegroundColor Cyan }
 function ErrText($err) { if ($err.ErrorDetails -and $err.ErrorDetails.Message) { $err.ErrorDetails.Message } else { $err.Exception.Message } }
+# Same helpers as invite.ps1 (Windows PowerShell 5.1 often leaves ErrorDetails empty, so read the body).
+function Send-Json($uri, $headers, $obj) {
+  try {
+    return @{ ok = $true; status = 200; data = (Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -Body ($obj | ConvertTo-Json -Depth 5)) }
+  } catch {
+    $status = 0; $body = ''
+    $resp = $_.Exception.Response
+    if ($resp) {
+      try { $status = [int]$resp.StatusCode } catch { }
+      try { $body = (New-Object IO.StreamReader($resp.GetResponseStream())).ReadToEnd() } catch { }
+    }
+    if (-not $body -and $_.ErrorDetails) { $body = $_.ErrorDetails.Message }
+    if (-not $body) { $body = $_.Exception.Message }
+    return @{ ok = $false; status = $status; body = $body }
+  }
+}
+function Test-AlreadyExists($res) { (-not $res.ok) -and ($res.body -match 'already|exists|registered' -or $res.status -eq 422) }
 
 $token = if ($env:SUPABASE_ACCESS_TOKEN) { $env:SUPABASE_ACCESS_TOKEN } else { Ask 'Supabase access token' }
 $base = "https://$ProjectRef.supabase.co"
@@ -43,19 +60,23 @@ $service = ($keys | Where-Object { $_.name -eq 'service_role' }).api_key
 $sh = @{ apikey = $service; Authorization = "Bearer $service"; 'Content-Type' = 'application/json' }
 $ah = @{ apikey = $anon; 'Content-Type' = 'application/json' }
 
-function Gen($type, $email) {
+function Request-Link($type, $email) {
   $req = @{ type = $type; email = $email; redirect_to = $SiteUrl }
   if ($type -eq 'invite') { $req.data = @{ needs_password = $true } }
-  Invoke-RestMethod -Method Post -Uri "$base/auth/v1/admin/generate_link" -Headers $sh -Body ($req | ConvertTo-Json)
+  Send-Json "$base/auth/v1/admin/generate_link" $sh $req
+}
+function Gen($type, $email) {
+  $res = Request-Link $type $email
+  if (-not $res.ok) { throw "generate_link $type failed ($($res.status)): $($res.body)" }
+  $res.data
 }
 # Same logic as invite.ps1: invite, or a reset link only if the account already exists.
 function GenLikeScript($email) {
-  try { $r = Gen 'invite' $email; return @{ r = $r; type = 'invite' } }
-  catch {
-    $why = ErrText $_
-    if ($why -match 'already|exists|registered') { return @{ r = (Gen 'recovery' $email); type = 'recovery' } }
-    throw "generate_link failed: $why"
-  }
+  $res = Request-Link 'invite' $email
+  $type = 'invite'
+  if (Test-AlreadyExists $res) { $type = 'recovery'; $res = Request-Link 'recovery' $email }
+  if (-not $res.ok) { throw "generate_link $type failed ($($res.status)): $($res.body)" }
+  @{ r = $res.data; type = $type }
 }
 function Verify($type, $email, $code) {
   try { Invoke-RestMethod -Method Post -Uri "$base/auth/v1/verify" -Headers $ah -Body (@{ type = $type; email = $email; token = $code } | ConvertTo-Json) }

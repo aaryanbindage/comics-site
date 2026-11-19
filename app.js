@@ -330,15 +330,15 @@ $('upload-form').addEventListener('submit', async (e) => {
 // ---------- Which screen to show ----------
 // "Loading…" stays up until a screen is chosen, so a slow network never shows a blank page.
 async function render(session) {
-  const seq = ++renderSeq;
-
   // An invite link always wins, even if this browser is already logged in as someone else.
   if (pendingToken) {
+    renderSeq++;
     shownUserId = null;
     return showOnly('accept');
   }
 
   if (!session) {
+    renderSeq++;
     isAdmin = false;
     shownUserId = null;
     loadSeq++;
@@ -354,8 +354,11 @@ async function render(session) {
 
   const mustSetPassword = needPassword || session.user.user_metadata?.needs_password;
   // Supabase re-announces the login on tab switches; don't rebuild a gallery that's already showing.
+  // This check must come before taking a turn (renderSeq): a skipped call must not cancel a render
+  // that is still on its way to showing the gallery (that left new readers stuck after saving a password).
   if (!mustSetPassword && shownUserId === session.user.id) return;
-  shownUserId = mustSetPassword ? null : session.user.id;
+  const seq = ++renderSeq;
+  shownUserId = null; // set only once the gallery is actually on screen
 
   // A saved login can outlive its account (user deleted / re-invited): confirm with the server.
   // Only a definite "no such user" logs out; a network blip or slow answer must not.
@@ -363,7 +366,6 @@ async function render(session) {
   try { ({ error: userErr } = await withTimeout(sb.auth.getUser(), 10000)); } catch { /* slow: carry on */ }
   if (seq !== renderSeq) return;
   if (userErr && (userErr.status === 401 || userErr.status === 403 || /sub claim|does not exist|not found/i.test(userErr.message))) {
-    shownUserId = null;
     await sb.auth.signOut({ scope: 'local' });
     setMsg('auth-msg', 'Your login is no longer valid. Log in again, or ask us for a new invitation link.', true);
     return;
@@ -380,6 +382,7 @@ async function render(session) {
   isAdmin = admin;
   $('who').textContent = session.user.email + (isAdmin ? ' (admin)' : '');
   showOnly('userbar', 'gallery', ...(isAdmin ? ['admin'] : []));
+  shownUserId = session.user.id;
   $('c-date').value = today();
   loadComics();
 }

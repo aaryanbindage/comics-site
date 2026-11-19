@@ -18,7 +18,25 @@ function Ask($label, $secret = $false) {
   }
   return (Read-Host $label).Trim()
 }
-function ErrText($err) { if ($err.ErrorDetails -and $err.ErrorDetails.Message) { $err.ErrorDetails.Message } else { $err.Exception.Message } }
+# POSTs JSON. Never throws for HTTP errors: returns ok/status/body, reading the error body directly
+# because Windows PowerShell 5.1 often leaves ErrorDetails empty.
+function Send-Json($uri, $headers, $obj) {
+  try {
+    return @{ ok = $true; status = 200; data = (Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -Body ($obj | ConvertTo-Json -Depth 5)) }
+  } catch {
+    $status = 0; $body = ''
+    $resp = $_.Exception.Response
+    if ($resp) {
+      try { $status = [int]$resp.StatusCode } catch { }
+      try { $body = (New-Object IO.StreamReader($resp.GetResponseStream())).ReadToEnd() } catch { }
+    }
+    if (-not $body -and $_.ErrorDetails) { $body = $_.ErrorDetails.Message }
+    if (-not $body) { $body = $_.Exception.Message }
+    return @{ ok = $false; status = $status; body = $body }
+  }
+}
+# Supabase answers 422 "already been registered" when the person already has an account.
+function Test-AlreadyExists($res) { (-not $res.ok) -and ($res.body -match 'already|exists|registered' -or $res.status -eq 422) }
 
 $token = if ($env:SUPABASE_ACCESS_TOKEN) { $env:SUPABASE_ACCESS_TOKEN } else { Ask 'Supabase access token' $true }
 
@@ -29,15 +47,11 @@ if (-not $service) { throw 'Could not read the service_role key (token needs API
 $h = @{ apikey = $service; Authorization = "Bearer $service"; 'Content-Type' = 'application/json' }
 $gen = "https://$ProjectRef.supabase.co/auth/v1/admin/generate_link"
 
-function New-Link($email, $type) {
+function Request-Link($email, $type) {
   $req = @{ type = $type; email = $email; redirect_to = $SiteUrl }
   # Flag new accounts so the site keeps asking for a password until one is saved.
   if ($type -eq 'invite') { $req.data = @{ needs_password = $true } }
-  $r = Invoke-RestMethod -Method Post -Uri $gen -Headers $h -Body ($req | ConvertTo-Json)
-  if (-not $r.email_otp) { throw 'Supabase returned no code.' }
-  # Link to our site with a form (invitee must type their email), so link scanners can't burn the
-  # one-time code and a stray link can't be used by someone who doesn't know the invited address.
-  "$SiteUrl/?otp=$($r.email_otp)&type=$type"
+  Send-Json $gen $h $req
 }
 
 while ($true) {
@@ -46,20 +60,18 @@ while ($true) {
   if ($email -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { Write-Host "That doesn't look like an email address." -ForegroundColor Red; continue }
   $name = Ask 'First name (optional, for the greeting)'
   $type = 'invite'
-  try {
-    $link = New-Link $email 'invite'
-  } catch {
-    $why = ErrText $_
-    if ($why -match 'already|exists|registered') {
-      # They already have an account -> give them a link to choose a new password instead.
-      Write-Host 'This person already has an account, so this is a password-reset link.' -ForegroundColor Yellow
-      $type = 'recovery'
-      try { $link = New-Link $email 'recovery' } catch { Write-Host "Failed: $(ErrText $_)" -ForegroundColor Red; continue }
-    } else {
-      Write-Host "Failed: $why" -ForegroundColor Red
-      continue
-    }
+  $res = Request-Link $email 'invite'
+  if (Test-AlreadyExists $res) {
+    # They already have an account -> give them a link to choose a new password instead.
+    Write-Host 'This person already has an account, so this is a password-reset link.' -ForegroundColor Yellow
+    $type = 'recovery'
+    $res = Request-Link $email 'recovery'
   }
+  if (-not $res.ok) { Write-Host "Failed ($($res.status)): $($res.body)" -ForegroundColor Red; continue }
+  if (-not $res.data.email_otp) { Write-Host 'Failed: Supabase returned no code.' -ForegroundColor Red; continue }
+  # Link to our site with a form (invitee must type their email), so link scanners can't burn the
+  # one-time code and a stray link can't be used by someone who doesn't know the invited address.
+  $link = "$SiteUrl/?otp=$($res.data.email_otp)&type=$type"
 
   $hi = if ($name) { "Hi $name,`n`n" } else { "Hi,`n`n" }
   if ($type -eq 'invite') {

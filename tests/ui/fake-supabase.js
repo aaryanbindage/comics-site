@@ -78,13 +78,16 @@
             setTimeout(() => emit('SIGNED_IN'), 0);
             return delay({ data: { session }, error: null });
           },
-          updateUser({ password, data }) {
-            if (S.updateError) return delay({ data: { user: null }, error: S.updateError });
+          // Like the real library: the request goes out, then USER_UPDATED is announced *before*
+          // updateUser() returns to the caller.
+          async updateUser({ password, data }) {
+            await delay(null);
+            if (S.updateError) return { data: { user: null }, error: S.updateError };
             Object.assign(session.user.user_metadata, data || {});
             S.users[session.user.email].password = password;
             S.users[session.user.email].user.user_metadata = { ...session.user.user_metadata };
-            setTimeout(() => emit('USER_UPDATED'), 0);
-            return delay({ data: { user: session.user }, error: null });
+            emit('USER_UPDATED');
+            return { data: { user: session.user }, error: null };
           },
           signOut() { session = null; S.signedOut = true; setTimeout(() => emit('SIGNED_OUT'), 0); return delay({ error: null }); },
         },

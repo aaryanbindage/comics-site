@@ -17,6 +17,8 @@ const { findChrome } = require('../chrome');
 
 const SITE = (process.env.SITE_URL || 'https://comics-site.onrender.com').replace(/\/$/, '');
 const SERVICE = process.env.SUPABASE_SERVICE_KEY;
+const MOCK = !!process.env.E2E_MOCK; // set by run-mock.js: Supabase is the local stand-in
+const SB_PATTERN = MOCK ? String.raw`/^http:\/\/127\.0\.0\.1:\d+\/sb$/` : String.raw`/^https:\/\/[a-z0-9]+\.supabase\.co$/`;
 const results = [];
 const check = (name, cond, extra = '') => {
   const line = (cond ? 'PASS ' : 'FAIL ') + name + (cond || extra === '' ? '' : '  [' + extra + ']');
@@ -104,7 +106,7 @@ class Tab {
       if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
         this.errors.push('console.error: ' + m.params.args.map((a) => a.value ?? a.description).join(' '));
       }
-      if (m.method === 'Network.requestWillBeSent') this.requests.push(m.params.request.url);
+      if (m.method === 'Network.requestWillBeSent') this.requests.push(m.params.request.method + ' ' + m.params.request.url);
     });
   }
   send(method, params) { return this.cdp.send(method, params, this.sid); }
@@ -151,8 +153,8 @@ async function publicChecks(tab) {
   check('live: page title', (await tab.eval('document.title')) === 'Comic At The Door', await tab.eval('document.title'));
   check('live: Supabase library is served by the site itself (no outside CDN)',
     await tab.eval("typeof supabase.createClient === 'function' && Array.from(document.scripts).every(function(s){return !s.src || s.src.indexOf(location.origin) === 0})"));
-  check('live: connected to the real Supabase project',
-    await tab.eval("/^https:\\/\\/[a-z0-9]+\\.supabase\\.co$/.test(window.SUPABASE_URL) && String(window.SUPABASE_ANON_KEY).length > 40"));
+  check(MOCK ? 'mock: connected to the stand-in Supabase' : 'live: connected to the real Supabase project',
+    await tab.eval(`${SB_PATTERN}.test(window.SUPABASE_URL) && String(window.SUPABASE_ANON_KEY).length > 40`));
   check('live: hidden from search engines', await tab.eval("!!document.querySelector('meta[name=robots][content*=noindex]')"));
   check('live: security policy present', await tab.eval("!!document.querySelector('meta[http-equiv=Content-Security-Policy]')"));
   check('live: no sideways scrolling on a phone', await tab.eval('document.documentElement.scrollWidth <= document.documentElement.clientWidth'));
@@ -190,7 +192,10 @@ async function publicChecks(tab) {
 
 // ---------- Full reader journey (needs the service key) ----------
 async function journey(browser, tab) {
+  await tab.goto(SITE + '/');
+  await tab.waitShown('auth');
   const SB = await tab.eval('window.SUPABASE_URL');
+  if (!new RegExp(SB_PATTERN.slice(1, -1)).test(SB || '')) throw new Error('could not read the Supabase address from the live site: ' + SB);
   const adminApi = async (method, p, body) => {
     const r = await fetch(SB + '/auth/v1' + p, {
       method,
@@ -259,7 +264,8 @@ async function journey(browser, tab) {
     check('journey: switching tabs does not reload or duplicate the gallery',
       comicsReqs() === before && (await tab2.eval("document.querySelectorAll('#grid .comic').length")) === n, `${comicsReqs()} vs ${before}`);
 
-    const signReqs = () => tab2.requests.filter((u) => u.includes('/storage/v1/object/sign')).length;
+    // POSTs ask for new image links; GETs to the same path are just image downloads.
+    const signReqs = () => tab2.requests.filter((u) => u.startsWith('POST ') && u.includes('/storage/v1/object/sign')).length;
     const signBefore = signReqs();
     await tab2.goto(SITE + '/');
     await tab2.waitShown('gallery,userbar');

@@ -27,6 +27,7 @@ Static site + Supabase (auth, Postgres, private Storage). Deployed on Render.
 
 ## Testing
 - `node tests/ui/run.js`: every screen and edge case in headless Chrome with a fake Supabase (no network).
+- `node tests/e2e/run-mock.js`: the full reader journey (invite → password → gallery → reset → deleted account) with the real page and real supabase-js library, against a local stand-in for Supabase. No network or token needed.
 - `node tests/e2e/live.js`: the live site against the real Supabase project; public checks only, touches no accounts.
 - `test-invite.ps1`: Supabase settings, the invite/reset backend, and a full reader journey in a real browser on the live site with a throwaway account (deleted afterwards). Run this after any change.
 
