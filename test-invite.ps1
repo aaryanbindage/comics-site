@@ -27,12 +27,14 @@ $cfg = Invoke-RestMethod -Uri "https://api.supabase.com/v1/projects/$ProjectRef/
 $hours = [math]::Round($cfg.mailer_otp_exp / 3600, 2)
 if ($cfg.mailer_otp_exp -ge 86400) { Pass "link lifetime is $hours hours" } else { Fail "link lifetime is only $hours hours (need 24). Set Email OTP Expiration to 86400." }
 if ($cfg.disable_signup) { Pass 'public signups are disabled' } else { Fail 'public signups are ENABLED (anyone can register)' }
+# Anonymous sign-ins would give a stranger a logged-in session, which can read the comics.
+if ($cfg.external_anonymous_users_enabled -eq $true) { Fail 'anonymous sign-ins are ENABLED (turn off in Authentication > Sign In / Providers)' } else { Pass 'anonymous sign-ins are disabled' }
 
 # --- Live site is the latest version ---
 try {
   $html = (Invoke-WebRequest -UseBasicParsing "$SiteUrl/").Content
   $js = (Invoke-WebRequest -UseBasicParsing "$SiteUrl/app.js").Content
-  if ($html -match 'newpw2' -and $js -match 'shownUserId') { Pass 'live site is running the latest code' } else { Fail 'live site is still on an older version (wait for Render to deploy)' }
+  if ($html -match 'vendor/supabase' -and $js -match 'renderSeq') { Pass 'live site is running the latest code' } else { Fail 'live site is still on an older version (wait for Render to deploy)' }
 } catch { Fail "could not load $SiteUrl ($($_.Exception.Message))" }
 
 $keys = Invoke-RestMethod -Uri "https://api.supabase.com/v1/projects/$ProjectRef/api-keys" -Headers $mh
@@ -104,4 +106,20 @@ try {
     catch { Write-Host "Could not delete test user $email - remove it in Authentication > Users." -ForegroundColor Yellow }
   }
 }
+
+# --- Full reader journey in a real (headless) browser on the live site ---
+Write-Host "`nRunning the full reader journey in a real browser against $SiteUrl (takes about a minute)..." -ForegroundColor Cyan
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+  Fail 'Node.js is not installed, so the browser journey could not run (install from nodejs.org)'
+} else {
+  $env:SUPABASE_SERVICE_KEY = $service   # only for this child process; never written anywhere
+  $env:SITE_URL = $SiteUrl
+  try {
+    & node (Join-Path $PSScriptRoot 'tests\e2e\live.js')
+    if ($LASTEXITCODE -ne 0) { $script:failed = $true }
+  } finally {
+    Remove-Item Env:SUPABASE_SERVICE_KEY -ErrorAction SilentlyContinue
+  }
+}
+
 if ($script:failed) { Write-Host "`nSome checks FAILED. Paste this output to Claude." -ForegroundColor Red; exit 1 } else { Write-Host "`nAll checks passed." -ForegroundColor Green }

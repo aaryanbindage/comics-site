@@ -3,8 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://*.supabase.co; connect-src 'self' https://*.supabase.co; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
   <title>Comic At The Door</title>
-  <link rel="stylesheet" href="style.css?v=3">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
   <header>
@@ -16,7 +20,7 @@
   </header>
 
   <main>
-    <p id="loading" class="muted center">Loading…</p>
+    <p id="loading" class="muted center" role="status">Loading…</p>
 
     <!-- Log in (no signup: invite only) -->
     <section id="auth" class="card narrow" hidden>
@@ -27,18 +31,19 @@
         <button type="submit" id="auth-submit">Log in</button>
       </form>
       <p class="muted small">Forgot your password? Message us and we'll send you a link to reset it.</p>
-      <p id="auth-msg" class="msg"></p>
+      <p id="auth-msg" class="msg" role="status" aria-live="polite"></p>
     </section>
 
-    <!-- Accept invitation (form, so link scanners can't use up the code) -->
+    <!-- Accept invitation / reset link (a form, so link scanners can't use up the code) -->
     <section id="accept" class="card narrow" hidden>
-      <h2>Welcome to Comic At The Door</h2>
-      <p>Please accept your invitation to access our comic archive. Enter the email address this invitation was sent to.</p>
+      <h2 id="accept-title">Welcome to Comic At The Door</h2>
+      <p id="accept-text">Please accept your invitation to access our comic archive. Enter the email address this invitation was sent to.</p>
       <form id="accept-form">
         <label>Email <input type="email" id="accept-email" required autocomplete="email"></label>
         <button type="submit" id="accept-btn">Accept invitation</button>
       </form>
-      <p id="accept-msg" class="msg"></p>
+      <p id="accept-msg" class="msg" role="status" aria-live="polite"></p>
+      <p class="muted small"><a href="/">Already set up? Go to the comics</a></p>
     </section>
 
     <!-- Set password (after accepting an invite or reset link) -->
@@ -50,7 +55,7 @@
         <label>Type it again <input type="password" id="newpw2" required minlength="8" autocomplete="new-password"></label>
         <button type="submit" id="setpw-btn">Save password</button>
       </form>
-      <p id="setpw-msg" class="msg"></p>
+      <p id="setpw-msg" class="msg" role="status" aria-live="polite"></p>
     </section>
 
     <!-- Admin upload -->
@@ -60,10 +65,10 @@
         <label>Title <input id="c-title" required maxlength="200"></label>
         <label>Date <input type="date" id="c-date" required></label>
         <label>Description <textarea id="c-desc" rows="2" maxlength="1000"></textarea></label>
-        <label>Image <input type="file" id="c-file" accept="image/*" required></label>
+        <label>Image (JPG, PNG, WebP or GIF) <input type="file" id="c-file" accept="image/jpeg,image/png,image/webp,image/gif" required></label>
         <button type="submit" id="upload-btn">Upload</button>
       </form>
-      <p id="upload-msg" class="msg"></p>
+      <p id="upload-msg" class="msg" role="status" aria-live="polite"></p>
     </section>
 
     <!-- Gallery -->
@@ -73,8 +78,9 @@
     </section>
   </main>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
-  <script src="config.js?v=3"></script>
-  <script src="app.js?v=3"></script>
+  <script src="boot.js?v=4"></script>
+  <script src="vendor/supabase-2.45.4.min.js"></script>
+  <script src="config.js?v=4"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

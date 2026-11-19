@@ -1,0 +1,254 @@
+<!doctype html>
+<html><head><meta charset="utf-8"></head><body><pre id="out"></pre>
+<script>
+// Drives the real index.html/app.js (with a fake Supabase) through every reader and admin path.
+const results = [];
+const check = (name, cond, extra = '') => results.push((cond ? 'PASS ' : 'FAIL ') + name + (cond || extra === '' ? '' : '  [' + extra + ']'));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const mk = (email, meta = {}) => ({ password: 'pw-' + email, user: { id: 'id-' + email, email, user_metadata: meta } });
+const sess = (u) => ({ access_token: 't', user: u.user });
+const COMICS = [
+  { id: 1, title: 'Second', description: 'desc two', image_path: 'b.png', published_on: '2026-11-15' },
+  { id: 2, title: 'First', description: null, image_path: 'a.png', published_on: '2026-11-08' },
+];
+const allErrors = [], allCsp = [];
+let frame;
+function collect() {
+  const S = window.__scenario;
+  if (!S) return;
+  if (!S.expectErrors) allErrors.push(...S.errors.map((e) => S.name + ': ' + e));
+  allCsp.push(...S.csp.map((e) => S.name + ': ' + e));
+}
+async function load(name, scn, query = '', { keepStorage = false, wait = 300 } = {}) {
+  collect();
+  if (frame) frame.remove();
+  if (!keepStorage) localStorage.clear();
+  window.__scenario = Object.assign({ name, calls: [], comics: COMICS.slice(), admins: [], users: {}, codes: [], session: null, errors: [], csp: [] }, scn);
+  frame = document.createElement('iframe');
+  frame.style.width = '375px';   // phone width
+  frame.style.height = '800px';
+  frame.src = '/index.html' + query;
+  document.body.appendChild(frame);
+  await new Promise((r) => (frame.onload = r));
+  await sleep(wait);
+}
+const d = () => frame.contentDocument;
+const vis = (id) => !d().getElementById(id).hidden;
+const txt = (id) => d().getElementById(id).textContent;
+const IDS = ['loading', 'auth', 'accept', 'setpw', 'admin', 'gallery', 'userbar'];
+const only = (...ids) => IDS.every((id) => vis(id) === ids.includes(id));
+const shown = () => IDS.filter(vis).join(',');
+const cards = () => d().querySelectorAll('#grid .comic').length;
+const selects = () => window.__scenario.calls.filter((c) => c === 'comics:select').length;
+const noSideScroll = () => d().documentElement.scrollWidth <= d().documentElement.clientWidth;
+async function submit(formId, vals, wait = 400) {
+  for (const [k, v] of Object.entries(vals)) d().getElementById(k).value = v;
+  d().getElementById(formId).requestSubmit();
+  await sleep(wait);
+}
+function setFile(name, type, size) {
+  const W = frame.contentWindow;
+  const dt = new W.DataTransfer();
+  dt.items.add(new W.File([new Uint8Array(size)], name, { type }));
+  d().getElementById('c-file').files = dt.files;
+}
+function localToday() { const x = new Date(); return new Date(x - x.getTimezoneOffset() * 60000).toISOString().slice(0, 10); }
+
+(async () => {
+  try {
+    const A = 'andrea@example.com', ADMIN = 'admin@example.com';
+    const LONG = 'a-really-long-email-address-for-testing-wrapping@some-long-domain-name.example.com';
+
+    // ---- Logged out ----
+    await load('logged-out', {});
+    check('logged out: only the login form shows', only('auth'), shown());
+    check('logged out: no sideways scrolling on a phone', noSideScroll());
+
+    await load('wrong-pw', { users: { [A]: mk(A) } });
+    await submit('auth-form', { email: A, password: 'nope' });
+    check('wrong password: friendly message', /Wrong email or password/.test(txt('auth-msg')), txt('auth-msg'));
+    check('wrong password: still on login, button usable', only('auth') && !d().getElementById('auth-submit').disabled, shown());
+
+    // ---- Log in ----
+    await load('login', { users: { [A]: mk(A) } });
+    await submit('auth-form', { email: 'Andrea@Example.com', password: 'pw-' + A });
+    check('login with capitals in email works', window.__scenario.loginEmail === A, window.__scenario.loginEmail);
+    check('login: reader sees gallery, no admin form', only('gallery', 'userbar'), shown());
+    check('login: both comics shown, newest first', cards() === 2 && d().querySelector('#grid h3').textContent === 'Second', cards());
+    check('login: description shown, no empty description for the other', d().querySelectorAll('#grid .desc').length === 1);
+    check('login: dates shown in long form', /November 15, 2026|15 November 2026/.test(d().querySelector('#grid small').textContent), d().querySelector('#grid small').textContent);
+    check('login: no sideways scrolling in gallery', noSideScroll());
+
+    const before = selects();
+    frame.contentWindow.__emit('SIGNED_IN'); await sleep(300);
+    frame.contentWindow.__emit('SIGNED_IN'); await sleep(300);
+    check('tab switch: gallery not reloaded', selects() === before, selects() + ' vs ' + before);
+    check('tab switch: no duplicate comics', cards() === 2, cards());
+
+    d().getElementById('logout').click(); await sleep(400);
+    check('log out: back to login form', only('auth'), shown());
+    check('log out: comics cleared from page', cards() === 0, cards());
+    check('log out: saved image links wiped', localStorage.getItem('cad-image-links') === null);
+
+    // ---- Image link cache ----
+    await load('cache-1', { session: sess(mk(A)) });
+    check('first visit: image links requested', window.__scenario.signCalls === 1, window.__scenario.signCalls);
+    check('first visit: image links saved', !!localStorage.getItem('cad-image-links'));
+    await load('cache-2', { session: sess(mk(A)) }, '', { keepStorage: true });
+    check('second visit: saved image links reused (no new request)', !window.__scenario.signCalls, window.__scenario.signCalls);
+    check('second visit: images still have links', [...d().querySelectorAll('#grid img')].every((i) => i.getAttribute('src')));
+    localStorage.setItem('cad-image-links', '{not json');
+    await load('cache-corrupt', { session: sess(mk(A)) }, '', { keepStorage: true });
+    check('corrupted saved links: gallery still works', cards() === 2 && window.__scenario.signCalls === 1, cards());
+
+    // ---- Broken image link is repaired ----
+    await load('bad-url', { session: sess(mk(A)), badUrls: { 'b.png': '/no-such-image.png' } }, '', { wait: 1200 });
+    check('broken image link: fetched a fresh one', (window.__scenario.resigned || []).includes('b.png'), JSON.stringify(window.__scenario.resigned));
+    check('broken image link: image now points at fresh link', d().querySelector('#grid img').getAttribute('src').startsWith('data:image/gif'));
+
+    // ---- Invite ----
+    const inv = () => ({ users: { [A]: mk(A, { needs_password: true }) }, codes: [{ email: A, token: '123456', type: 'invite' }] });
+    await load('invite', inv(), '?otp=123456&type=invite');
+    check('invite link: accept form shows', only('accept'), shown());
+    check('invite link: invitation wording', /Welcome/.test(txt('accept-title')) && /Accept invitation/.test(txt('accept-btn')));
+    check('invite link: no sideways scrolling', noSideScroll());
+    await submit('accept-form', { 'accept-email': 'wrong@example.com' });
+    check('invite: wrong email shows message', /doesn't match/.test(txt('accept-msg')), txt('accept-msg'));
+    check('invite: wrong email keeps form open', only('accept'), shown());
+    check('invite: wrong email did not use up code', window.__scenario.codes.length === 1);
+    await submit('accept-form', { 'accept-email': ' Andrea@Example.com ' });
+    check('invite: right email (caps/spaces) goes to password page', only('setpw'), shown() + ' / ' + txt('accept-msg'));
+    check('invite: code removed from address bar', !frame.contentWindow.location.search.includes('otp'));
+    await submit('setpw-form', { newpw: 'abcdefgh', newpw2: 'abcdefgX' });
+    check('set password: mismatch is caught', /don't match/.test(txt('setpw-msg')), txt('setpw-msg'));
+    check('set password: mismatch stays on page', only('setpw'), shown());
+    await submit('setpw-form', { newpw: 'abcdefgh', newpw2: 'abcdefgh' }, 600);
+    check('set password: lands in gallery', only('gallery', 'userbar'), shown() + ' / ' + txt('setpw-msg'));
+    check('set password: comics not duplicated', cards() === 2, cards());
+    check('set password: flag cleared', window.__scenario.users[A].user.user_metadata.needs_password === false);
+    check('set password: password boxes emptied', d().getElementById('newpw').value === '');
+
+    await load('invite-other-logged-in', { ...inv(), users: { [A]: mk(A, { needs_password: true }), [ADMIN]: mk(ADMIN) }, admins: ['id-' + ADMIN], session: sess(mk(ADMIN)) }, '?otp=123456&type=invite');
+    check('invite while someone else logged in: accept form, not their gallery', only('accept'), shown());
+    await submit('accept-form', { 'accept-email': A });
+    check('invite while someone else logged in: switches to invitee password page', only('setpw'), shown());
+
+    await load('came-back', { users: { [A]: mk(A, { needs_password: true }) }, session: sess(mk(A, { needs_password: true })) });
+    check('came back before setting password: password page', only('setpw'), shown());
+
+    await load('reopen-used', { users: { [A]: mk(A, { needs_password: true }) }, session: sess(mk(A, { needs_password: true })) }, '?otp=123456&type=invite');
+    await submit('accept-form', { 'accept-email': A }, 600);
+    check('reopened used link + same email: password page (no hang)', only('setpw'), shown() + ' / ' + txt('accept-msg'));
+    check('reopened used link: button usable again', !d().getElementById('accept-btn').disabled);
+
+    await load('reopen-used-done', { users: { [A]: mk(A) }, session: sess(mk(A)) }, '?otp=123456&type=invite');
+    await submit('accept-form', { 'accept-email': A }, 600);
+    check('reopened used link after setup: gallery', only('gallery', 'userbar'), shown());
+
+    await load('bookmark', { users: { [A]: mk(A) }, session: sess(mk(A)) }, '?otp=123456&type=invite');
+    d().querySelector('#accept a[href="/"]').click();
+    await new Promise((r) => (frame.onload = r)); await sleep(400);
+    check('"Already set up?" link goes straight to the comics', only('gallery', 'userbar'), shown());
+
+    await load('used-no-session', { users: { [A]: mk(A) } }, '?otp=123456&type=invite');
+    await submit('accept-form', { 'accept-email': A });
+    check('used link, no session: clear message', /expired or was already used/.test(txt('accept-msg')), txt('accept-msg'));
+
+    await load('truncated', {}, '?otp=123456');
+    check('truncated link: falls back to login, no crash', only('auth'), shown());
+
+    // ---- Password reset link ----
+    await load('reset', { users: { [A]: mk(A) }, codes: [{ email: A, token: '654321', type: 'recovery' }] }, '?otp=654321&type=recovery');
+    check('reset link: reset wording, not "invitation"', /Reset your password/.test(txt('accept-title')) && txt('accept-btn') === 'Continue', txt('accept-title'));
+    await submit('accept-form', { 'accept-email': A });
+    check('reset link: password page', only('setpw'), shown());
+    await submit('setpw-form', { newpw: 'newpass12', newpw2: 'newpass12' }, 600);
+    check('reset link: gallery after new password', only('gallery', 'userbar'), shown());
+
+    // ---- Spoofed message in link ----
+    await load('spoof', {}, '#error_description=Your+account+is+locked.+Email+your+password+to+evil%40example.com');
+    check('crafted link cannot put its own words on the page', !/evil|locked/i.test(d().body.textContent), txt('auth-msg'));
+    check('crafted link: shows our own expired-link message', /expired or was already used/.test(txt('auth-msg')), txt('auth-msg'));
+
+    // ---- Account problems / network ----
+    await load('deleted', { session: sess(mk(A)), getUserError: { message: 'User from sub claim in JWT does not exist', status: 403 } });
+    check('deleted account: sent to login with explanation', only('auth') && /no longer valid/.test(txt('auth-msg')), shown() + ' / ' + txt('auth-msg'));
+
+    await load('blip', { users: { [A]: mk(A) }, session: sess(mk(A)), getUserError: { message: 'Failed to fetch', status: 0 } });
+    check('network blip: stays logged in', only('gallery', 'userbar') && !window.__scenario.signedOut, shown());
+
+    await load('slow-check', { session: sess(mk(A)), getUserDelay: 2000 }, '', { wait: 300 });
+    check('slow login check: "Loading…" shown, not a blank page', only('loading'), shown());
+    await sleep(2200);
+    check('slow login check: gallery once it answers', only('gallery', 'userbar'), shown());
+
+    await load('hung-check', { session: sess(mk(A)), getUserHang: true }, '', { wait: 11000 });
+    check('login check never answers: gallery after 10s anyway', only('gallery', 'userbar'), shown());
+
+    await load('logout-mid-load', { session: sess(mk(A)), getUserDelay: 800 }, '', { wait: 100 });
+    frame.contentWindow.__setSession(null);
+    frame.contentWindow.__emit('SIGNED_OUT');
+    await sleep(1200);
+    check('logged out while page still loading: stays logged out', only('auth') && cards() === 0, shown());
+
+    await load('comics-error', { session: sess(mk(A)), comicsError: true });
+    check('comics fail to load: clear message', vis('empty') && /Could not load comics/.test(txt('empty')), txt('empty'));
+
+    await load('empty', { comics: [], session: sess(mk(A)) });
+    check('empty archive: friendly message', vis('empty') && /No comics yet/.test(txt('empty')), txt('empty'));
+
+    await load('long-email', { session: sess(mk(LONG)) });
+    check('very long email: no sideways scrolling', noSideScroll(), d().documentElement.scrollWidth);
+
+    await load('verify-hang', { users: { [A]: mk(A, { needs_password: true }) }, codes: [{ email: A, token: '1', type: 'invite' }], verifyHang: true }, '?otp=1&type=invite');
+    await submit('accept-form', { 'accept-email': A }, 16500);
+    check('server not answering: error instead of hang', /Can't reach the server/.test(txt('accept-msg')), txt('accept-msg'));
+    check('server not answering: button re-enabled', !d().getElementById('accept-btn').disabled);
+
+    // ---- Site can't start ----
+    await load('no-lib', { noLib: true, expectErrors: true });
+    check('library failed to load: tells reader to refresh', /could not load/i.test(txt('loading')), txt('loading'));
+    await load('never-init', { neverInit: true }, '', { wait: 12500 });
+    check('stuck loading: helpful message after 12s', /taking longer than expected/.test(txt('loading')), txt('loading'));
+
+    // ---- Admin ----
+    await load('admin', { users: { [ADMIN]: mk(ADMIN) }, admins: ['id-' + ADMIN], session: sess(mk(ADMIN)) });
+    check('admin: upload form + gallery', only('admin', 'gallery', 'userbar'), shown());
+    check('admin: delete buttons on comics', d().querySelectorAll('#grid button.danger').length === 2);
+    check('admin: upload date defaults to local today', d().getElementById('c-date').value === localToday(), d().getElementById('c-date').value);
+    check('admin: label says admin', /\(admin\)/.test(txt('who')));
+
+    setFile('IMG_0001.HEIC', 'image/heic', 1000);
+    await submit('upload-form', { 'c-title': 'Heic', 'c-date': '2026-11-20' });
+    check('admin: iPhone HEIC photo refused with explanation', /HEIC/.test(txt('upload-msg')) && !window.__scenario.uploaded, txt('upload-msg'));
+
+    frame.contentWindow.confirm = () => false;
+    setFile('huge.png', 'image/png', 6 * 1024 * 1024);
+    await submit('upload-form', { 'c-title': 'Huge', 'c-date': '2026-11-20' });
+    check('admin: huge image asks first, and cancel uploads nothing', !window.__scenario.uploaded);
+
+    frame.contentWindow.confirm = () => true;
+    setFile('Page 1.PNG', 'image/png', 1000);
+    await submit('upload-form', { 'c-title': 'New one', 'c-date': '2026-11-20' }, 600);
+    check('admin: upload succeeds', txt('upload-msg') === 'Uploaded!', txt('upload-msg'));
+    check('admin: uploaded comic appears at the top', cards() === 3 && d().querySelector('#grid h3').textContent === 'New one', cards());
+    check('admin: stored file name is random and safe', /^[0-9a-f-]+\.png$/.test(window.__scenario.uploaded.path), window.__scenario.uploaded.path);
+    check('admin: browsers may cache uploaded images', window.__scenario.uploaded.opts.cacheControl === '604800');
+    check('admin: form cleared, date reset to today', d().getElementById('c-title').value === '' && d().getElementById('c-date').value === localToday());
+
+    frame.contentWindow.confirm = () => true;
+    d().querySelector('#grid button.danger').click(); await sleep(500);
+    check('admin: delete removes the comic', cards() === 2, cards());
+
+    await load('reader', { session: sess(mk(A)) });
+    check('reader: no upload form, no delete buttons', !vis('admin') && d().querySelectorAll('#grid button.danger').length === 0);
+
+    collect();
+    check('no uncaught JavaScript errors in any scenario', allErrors.length === 0, allErrors.join(' | '));
+    check('no content-security-policy violations in any scenario', allCsp.length === 0, allCsp.join(' | '));
+  } catch (e) {
+    results.push('FAIL runner crashed: ' + e.stack);
+  }
+  document.getElementById('out').textContent = results.join('\n') + '\nDONE';
+})();
+</script></body></html>

@@ -1,5 +1,10 @@
 const $ = (id) => document.getElementById(id);
-const SECTIONS = ['auth', 'accept', 'setpw', 'admin', 'gallery', 'userbar'];
+const SECTIONS = ['loading', 'auth', 'accept', 'setpw', 'admin', 'gallery', 'userbar'];
+// Formats every browser can show. iPhone HEIC photos only display in Safari, so they're refused.
+const IMAGE_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
+const BIG_IMAGE = 5 * 1024 * 1024;
+const SIGN_SECONDS = 6 * 3600;           // how long an image link stays valid
+const URL_CACHE_KEY = 'cad-image-links'; // reuse image links between visits so browsers can cache images
 
 // Invite / reset links look like /?otp=123456&type=invite. The code is only used when the person
 // submits the form with the invited email, so link scanners and chat previews can't use it up,
@@ -9,19 +14,27 @@ const linkType = qs.get('type');
 let pendingToken = qs.get('otp') && ['invite', 'recovery'].includes(linkType)
   ? { token: qs.get('otp'), type: linkType } : null;
 
-// Links sent by Supabase's own emails arrive as #...&type=invite (or #error_description=... if bad).
+// Links sent by Supabase's own emails arrive as #...&type=invite, or #error_description=... if bad.
+// Never show that text: anyone can put words in a URL, so we show our own message instead.
 let needPassword = /type=(invite|recovery)/.test(location.hash);
-const linkError = new URLSearchParams(location.hash.slice(1)).get('error_description');
+let linkFailed = new URLSearchParams(location.hash.slice(1)).has('error_description');
 
 let isAdmin = false;
 let shownUserId = null; // whose gallery is on screen, so re-sent auth events don't reload it
 let loadSeq = 0;        // ignore results from an older gallery load
+let renderSeq = 0;      // ignore an older render that finishes after a newer one (e.g. log out mid-load)
 
 if (!window.supabase || !window.SUPABASE_URL) {
   $('loading').textContent = 'The site could not load. Please refresh the page.';
   throw new Error('Supabase library or config missing');
 }
 const sb = supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+
+if (pendingToken && pendingToken.type === 'recovery') {
+  $('accept-title').textContent = 'Reset your password';
+  $('accept-text').textContent = 'Enter the email address this link was sent to, then choose a new password.';
+  $('accept-btn').textContent = 'Continue';
+}
 
 // Reject instead of hanging forever if a request never answers.
 function withTimeout(promise, ms = 15000) {
@@ -58,6 +71,34 @@ function today() {
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 
+// ---------- Image link cache (browser storage can be blocked, so every access is guarded) ----------
+function readUrlCache() { try { return JSON.parse(localStorage.getItem(URL_CACHE_KEY)) || {}; } catch { return {}; } }
+function writeUrlCache(c) { try { localStorage.setItem(URL_CACHE_KEY, JSON.stringify(c)); } catch { /* not saved */ } }
+function clearUrlCache() { try { localStorage.removeItem(URL_CACHE_KEY); } catch { /* nothing to clear */ } }
+
+async function signedUrls(paths) {
+  const now = Date.now();
+  const cache = readUrlCache();
+  const out = new Map();
+  const need = [];
+  for (const p of paths) {
+    const c = cache[p];
+    if (c && c.exp - now > 3600 * 1000) out.set(p, c.url); // at least an hour left: reuse
+    else need.push(p);
+  }
+  if (need.length) {
+    const { data } = await withTimeout(sb.storage.from('comics').createSignedUrls(need, SIGN_SECONDS));
+    for (const s of data || []) {
+      if (!s.signedUrl) continue;
+      out.set(s.path, s.signedUrl);
+      cache[s.path] = { url: s.signedUrl, exp: now + SIGN_SECONDS * 1000 };
+    }
+  }
+  for (const p of Object.keys(cache)) if (!paths.includes(p) || cache[p].exp < now) delete cache[p];
+  writeUrlCache(cache);
+  return out;
+}
+
 // ---------- Log in ----------
 // No signup: accounts exist only if invited.
 $('auth-form').addEventListener('submit', async (e) => {
@@ -78,7 +119,7 @@ $('auth-form').addEventListener('submit', async (e) => {
   }
 });
 
-// ---------- Accept invitation ----------
+// ---------- Accept invitation / reset link ----------
 $('accept-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const btn = $('accept-btn');
@@ -104,13 +145,13 @@ $('accept-form').addEventListener('submit', async (e) => {
       // A wrong email leaves the link usable, so the right person can still retry.
       return setMsg('accept-msg', /rate limit|too many/i.test(error.message)
         ? friendly(error)
-        : 'That email doesn\'t match this invitation, or the link has expired or was already used. Check the email and try again, or ask us for a new link.', true);
+        : 'That email doesn\'t match this link, or the link has expired or was already used. Check the email and try again, or ask us for a new link.', true);
     }
     history.replaceState(null, '', location.pathname);
     const { data } = await withTimeout(sb.auth.getSession());
     await render(data.session);
   } catch (err) {
-    console.error('accept failed', err);
+    console.warn('accept failed', err);
     needPassword = false;
     pendingToken = tok;
     showOnly('accept');
@@ -150,6 +191,7 @@ $('setpw-form').addEventListener('submit', async (e) => {
 });
 
 $('logout').addEventListener('click', async () => {
+  clearUrlCache();
   const { error } = await sb.auth.signOut();
   if (error) await sb.auth.signOut({ scope: 'local' }); // still log out on this device if offline
 });
@@ -157,72 +199,81 @@ $('logout').addEventListener('click', async () => {
 // ---------- Gallery ----------
 async function loadComics() {
   const seq = ++loadSeq;
-  const { data, error } = await sb
-    .from('comics')
-    .select('*')
-    .order('published_on', { ascending: false })
-    .order('id', { ascending: false });
-  if (seq !== loadSeq) return;
   const empty = $('empty');
-  if (error) {
+  try {
+    const { data, error } = await withTimeout(sb
+      .from('comics')
+      .select('id, title, description, image_path, published_on')
+      .order('published_on', { ascending: false })
+      .order('id', { ascending: false }));
+    if (seq !== loadSeq) return;
+    if (error) throw error;
+    empty.hidden = data.length > 0;
+    empty.textContent = 'No comics yet. Check back soon!';
+    if (!data.length) return $('grid').replaceChildren();
+
+    // If links can't be made now, each image fetches its own link when it fails (below).
+    const urls = await signedUrls(data.map((c) => c.image_path)).catch(() => new Map());
+    if (seq !== loadSeq) return;
+
+    const frag = document.createDocumentFragment();
+    for (const c of data) frag.append(comicCard(c, urls.get(c.image_path)));
+    $('grid').replaceChildren(frag);
+  } catch (err) {
+    if (seq !== loadSeq) return;
+    console.warn('loading comics failed', err);
     $('grid').replaceChildren();
     empty.hidden = false;
-    empty.textContent = 'Could not load comics. Please refresh the page.';
-    return;
+    empty.textContent = 'Could not load comics. Please check your connection and refresh the page.';
   }
-  empty.hidden = data.length > 0;
-  empty.textContent = 'No comics yet. Check back soon!';
-  if (!data.length) return $('grid').replaceChildren();
+}
 
-  const { data: signed } = await sb.storage.from('comics').createSignedUrls(data.map((c) => c.image_path), 3600);
-  if (seq !== loadSeq) return;
-  const urls = new Map((signed || []).map((s) => [s.path, s.signedUrl]));
+function comicCard(c, url) {
+  const card = document.createElement('article');
+  card.className = 'comic';
 
-  const frag = document.createDocumentFragment();
-  for (const c of data) {
-    const card = document.createElement('article');
-    card.className = 'comic';
+  const img = document.createElement('img');
+  img.loading = 'lazy';
+  img.alt = c.title;
+  // Image links expire; if one fails (tab left open, stale cache), fetch a fresh link once.
+  img.addEventListener('error', async () => {
+    if (img.dataset.retried) return;
+    img.dataset.retried = '1';
+    const { data: fresh } = await sb.storage.from('comics').createSignedUrl(c.image_path, SIGN_SECONDS);
+    if (!fresh) return;
+    const cache = readUrlCache();
+    cache[c.image_path] = { url: fresh.signedUrl, exp: Date.now() + SIGN_SECONDS * 1000 };
+    writeUrlCache(cache);
+    img.src = fresh.signedUrl;
+  });
+  img.src = url || '';
 
-    const img = document.createElement('img');
-    img.loading = 'lazy';
-    img.alt = c.title;
-    // Image links expire after an hour; if one fails (tab left open), fetch a fresh link once.
-    img.addEventListener('error', async () => {
-      if (img.dataset.retried) return;
-      img.dataset.retried = '1';
-      const { data: fresh } = await sb.storage.from('comics').createSignedUrl(c.image_path, 3600);
-      if (fresh) img.src = fresh.signedUrl;
-    });
-    img.src = urls.get(c.image_path) || '';
-
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    const row = document.createElement('div');
-    row.className = 'row';
-    const h = document.createElement('h3');
-    h.textContent = c.title;
-    row.append(h);
-    if (isAdmin) {
-      const del = document.createElement('button');
-      del.className = 'danger';
-      del.textContent = 'Delete';
-      del.addEventListener('click', () => deleteComic(c));
-      row.append(del);
-    }
-    const date = document.createElement('small');
-    date.className = 'muted';
-    date.textContent = new Date(c.published_on + 'T00:00:00').toLocaleDateString(undefined, { dateStyle: 'long' });
-    meta.append(row, date);
-    if (c.description) {
-      const p = document.createElement('p');
-      p.className = 'desc';
-      p.textContent = c.description;
-      meta.append(p);
-    }
-    card.append(img, meta);
-    frag.append(card);
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const row = document.createElement('div');
+  row.className = 'row';
+  const h = document.createElement('h3');
+  h.textContent = c.title;
+  row.append(h);
+  if (isAdmin) {
+    const del = document.createElement('button');
+    del.className = 'danger';
+    del.textContent = 'Delete';
+    del.addEventListener('click', () => deleteComic(c));
+    row.append(del);
   }
-  $('grid').replaceChildren(frag);
+  const date = document.createElement('small');
+  date.className = 'muted';
+  date.textContent = new Date(c.published_on + 'T00:00:00').toLocaleDateString(undefined, { dateStyle: 'long' });
+  meta.append(row, date);
+  if (c.description) {
+    const p = document.createElement('p');
+    p.className = 'desc';
+    p.textContent = c.description;
+    meta.append(p);
+  }
+  card.append(img, meta);
+  return card;
 }
 
 async function deleteComic(c) {
@@ -239,13 +290,20 @@ $('upload-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const file = $('c-file').files[0];
   if (!file) return;
+  const ext = IMAGE_TYPES[file.type];
+  if (!ext) {
+    return setMsg('upload-msg', 'Please choose a JPG, PNG, WebP or GIF image. iPhone HEIC photos don\'t show in most browsers, so export them as JPG first.', true);
+  }
+  if (file.size > BIG_IMAGE && !confirm(`This image is ${(file.size / 1048576).toFixed(1)} MB. Big images load slowly on phones and use up the monthly bandwidth faster. Upload anyway?`)) return;
+
   const btn = $('upload-btn');
   btn.disabled = true;
   setMsg('upload-msg', 'Uploading…');
   try {
-    const ext = (file.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
-    const path = `${crypto.randomUUID()}.${ext}`;
-    const up = await sb.storage.from('comics').upload(path, file, { contentType: file.type });
+    const id = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
+    const path = `${id}.${ext}`;
+    // Files never change once uploaded (new name each time), so browsers may keep them a week.
+    const up = await sb.storage.from('comics').upload(path, file, { contentType: file.type, cacheControl: '604800', upsert: false });
     if (up.error) return setMsg('upload-msg', friendly(up.error), true);
 
     const { error } = await sb.from('comics').insert({
@@ -270,8 +328,9 @@ $('upload-form').addEventListener('submit', async (e) => {
 });
 
 // ---------- Which screen to show ----------
+// "Loading…" stays up until a screen is chosen, so a slow network never shows a blank page.
 async function render(session) {
-  show('loading', false);
+  const seq = ++renderSeq;
 
   // An invite link always wins, even if this browser is already logged in as someone else.
   if (pendingToken) {
@@ -283,9 +342,13 @@ async function render(session) {
     isAdmin = false;
     shownUserId = null;
     loadSeq++;
+    clearUrlCache();
     $('grid').replaceChildren();
     showOnly('auth');
-    if (linkError) setMsg('auth-msg', linkError + '. Please ask us for a new invitation link.', true);
+    if (linkFailed) {
+      linkFailed = false;
+      setMsg('auth-msg', 'That link has expired or was already used. Please ask us for a new one.', true);
+    }
     return;
   }
 
@@ -295,8 +358,10 @@ async function render(session) {
   shownUserId = mustSetPassword ? null : session.user.id;
 
   // A saved login can outlive its account (user deleted / re-invited): confirm with the server.
-  // Only a definite "no such user" logs out; a network blip must not.
-  const { error: userErr } = await sb.auth.getUser();
+  // Only a definite "no such user" logs out; a network blip or slow answer must not.
+  let userErr = null;
+  try { ({ error: userErr } = await withTimeout(sb.auth.getUser(), 10000)); } catch { /* slow: carry on */ }
+  if (seq !== renderSeq) return;
   if (userErr && (userErr.status === 401 || userErr.status === 403 || /sub claim|does not exist|not found/i.test(userErr.message))) {
     shownUserId = null;
     await sb.auth.signOut({ scope: 'local' });
@@ -306,8 +371,13 @@ async function render(session) {
 
   if (mustSetPassword) return showOnly('setpw');
 
-  const { data } = await sb.from('admins').select('user_id').eq('user_id', session.user.id).maybeSingle();
-  isAdmin = !!data;
+  let admin = false;
+  try {
+    const { data } = await withTimeout(sb.from('admins').select('user_id').eq('user_id', session.user.id).maybeSingle(), 10000);
+    admin = !!data;
+  } catch { /* treat as reader */ }
+  if (seq !== renderSeq) return;
+  isAdmin = admin;
   $('who').textContent = session.user.email + (isAdmin ? ' (admin)' : '');
   showOnly('userbar', 'gallery', ...(isAdmin ? ['admin'] : []));
   $('c-date').value = today();

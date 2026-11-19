@@ -24,7 +24,8 @@ a { color: var(--accent); }
 .muted { color: var(--muted); }
 .msg { min-height: 1.2em; margin: 8px 0 0; font-size: .9rem; }
 .msg.err { color: var(--danger); }
-#userbar { display: flex; align-items: center; gap: 10px; }
+#userbar { display: flex; align-items: center; gap: 10px; min-width: 0; }
+#who { overflow-wrap: anywhere; }
 #grid { display: grid; gap: 24px; }
 .comic { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .comic img { display: block; width: 100%; height: auto; }
